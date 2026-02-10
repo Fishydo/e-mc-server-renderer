@@ -2,7 +2,14 @@ import http from "http";
 import WebSocket, { WebSocketServer } from "ws";
 
 const PORT = process.env.PORT || 3000;
-const FALIX_WS_URL = "ws://157.90.205.61:24660";
+
+// Ordered fallbacks
+const FALIX_ENDPOINTS = [
+  "ws://157.90.205.61:24660",
+  "wss://157.90.205.61:24660",
+  "ws://lccserver.falix.app",
+  "wss://lccserver.falix.app"
+];
 
 const server = http.createServer();
 const wss = new WebSocketServer({ server });
@@ -10,17 +17,33 @@ const wss = new WebSocketServer({ server });
 wss.on("connection", (clientWs) => {
   console.log("Client connected");
 
-  let falixWs;
-  let alive = true;
+  let falixWs = null;
+  let active = true;
+  let endpointIndex = 0;
 
-  function connectFalix() {
-    falixWs = new WebSocket(FALIX_WS_URL);
+  function tryNextEndpoint() {
+    if (!active || endpointIndex >= FALIX_ENDPOINTS.length) {
+      console.error("All Falix endpoints failed");
+      clientWs.close();
+      return;
+    }
 
-    falixWs.on("open", () => {
-      console.log("Connected to Falix");
+    const url = FALIX_ENDPOINTS[endpointIndex++];
+    console.log("Trying Falix:", url);
+
+    falixWs = new WebSocket(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0",
+        "Origin": "https://client.falixnodes.net"
+      },
+      handshakeTimeout: 5000
     });
 
-    // Falix → Client
+    falixWs.on("open", () => {
+      console.log("Connected to Falix via", url);
+    });
+
     falixWs.on("message", (msg) => {
       if (clientWs.readyState === WebSocket.OPEN) {
         clientWs.send(msg);
@@ -28,40 +51,34 @@ wss.on("connection", (clientWs) => {
     });
 
     falixWs.on("close", () => {
-      console.log("Falix disconnected");
-      if (alive) {
-        setTimeout(connectFalix, 2000); // auto reconnect
-      }
+      console.warn("Falix closed:", url);
+      tryNextEndpoint();
     });
 
     falixWs.on("error", (err) => {
-      console.error("Falix error:", err.message);
+      console.warn("Falix error:", url, err.message);
+      tryNextEndpoint();
     });
   }
 
-  connectFalix();
+  // start fallback chain
+  tryNextEndpoint();
 
   // Client → Falix
   clientWs.on("message", (msg) => {
-    if (falixWs?.readyState === WebSocket.OPEN) {
+    if (falixWs && falixWs.readyState === WebSocket.OPEN) {
       falixWs.send(msg);
     }
   });
 
   clientWs.on("close", () => {
-    alive = false;
+    active = false;
     falixWs?.close();
     console.log("Client disconnected");
   });
 
-  clientWs.on("error", console.error);
+  clientWs.on("error", () => {});
 });
 
-// 🔁 Keep Render awake (every 5 minutes)
-setInterval(() => {
-  fetch("https://YOUR-RENDER-APP.onrender.com").catch(() => {});
-}, 5 * 60 * 1000);
-
-server.listen(PORT, () => {
-  console.log(`WS proxy running on ws://localhost:${PORT}`);
-});
+// keep Render awake (HTTP is enough)
+setI
